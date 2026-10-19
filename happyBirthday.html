@@ -74,7 +74,7 @@
 
 <canvas id="heartCanvas"></canvas>
 
-<div class="hint" id="hint">нажми на сердце 💗</div>
+<div class="hint" id="hint">нажми на сердце 💗 (а потом лопай шарики 🎈)</div>
 
 <div class="final-message" id="finalMessage">
   <h2>С твоим днем, мая любофь ❤️</h2>
@@ -143,6 +143,7 @@ const sparkles = [];
 const balloons = [];
 const confetti = [];
 const heartBursts = [];
+const balloonBursts = [];   // <-- осколки лопнувших шариков
 
 let time = 0;
 
@@ -195,6 +196,7 @@ function rebuild() {
   balloons.length = 0;
   confetti.length = 0;
   heartBursts.length = 0;
+  balloonBursts.length = 0;
   lastBeatIdx = -1;
   title.classList.remove('show');
   hint.classList.remove('show');
@@ -432,6 +434,9 @@ function celebrate(cx, cy) {
   if (finaleStarted) return;
   finaleStarted = true;
 
+  // Разблокируем звук при первом клике (браузеры требуют пользовательского жеста)
+  getAudioCtx();
+
   // Стартовая волна шариков — распределяем по вертикали, чтобы сразу летели стеной
   for (let i = 0; i < 35; i++) spawnBalloon(Math.random() * 3);
 
@@ -447,6 +452,102 @@ function celebrate(cx, cy) {
   setTimeout(() => {
     finalMessage.classList.add('show');
   }, 1300);
+}
+
+// ============ 🔉 Звук лопания ============
+let audioCtx = null;
+
+function getAudioCtx() {
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) { return null; }
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function playPopSound() {
+  const ac = getAudioCtx();
+  if (!ac) return;
+  const now = ac.currentTime;
+
+  // Высокочастотный "хлопок" — короткий шумовой всплеск
+  const bufLen = Math.floor(ac.sampleRate * 0.14);
+  const buf = ac.createBuffer(1, bufLen, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) {
+    const t = i / bufLen;
+    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 3.5);
+  }
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const bp = ac.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 1600 + Math.random() * 800;
+  bp.Q.value = 0.9;
+  const ng = ac.createGain();
+  ng.gain.value = 0.35;
+  src.connect(bp); bp.connect(ng); ng.connect(ac.destination);
+  src.start(now);
+  src.stop(now + 0.16);
+
+  // Низкочастотный "бум" для объёма
+  const osc = ac.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(200 + Math.random() * 80, now);
+  osc.frequency.exponentialRampToValueAtTime(60, now + 0.1);
+  const og = ac.createGain();
+  og.gain.setValueAtTime(0.3, now);
+  og.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+  osc.connect(og); og.connect(ac.destination);
+  osc.start(now);
+  osc.stop(now + 0.15);
+}
+
+// ============ 🎯 Поиск шарика под курсором ============
+function findBalloonAt(mx, my) {
+  for (let i = balloons.length - 1; i >= 0; i--) {
+    const b = balloons[i];
+    const dx = mx - b.x;
+    const dy = my - b.y;
+    const rx = b.size * 0.85 + 5;
+    const ry = b.size + 5;
+    if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1) return i;
+  }
+  return -1;
+}
+
+// ============ 💥 Осколки лопнувшего шарика ============
+function spawnBalloonBurst(b) {
+  const pieces = 12 + Math.floor(Math.random() * 8);
+  for (let i = 0; i < pieces; i++) {
+    const angle = (i / pieces) * Math.PI * 2 + Math.random() * 0.4;
+    const speed = 2 + Math.random() * 5;
+    balloonBursts.push({
+      x: b.x + (Math.random() - 0.5) * b.size * 0.4,
+      y: b.y + (Math.random() - 0.5) * b.size * 0.4,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 1,
+      life: 1,
+      decay: 0.015 + Math.random() * 0.015,
+      size: 2.5 + Math.random() * 4,
+      hue: b.color.h + (Math.random() - 0.5) * 25,
+      sat: b.color.s,
+      light: b.color.l,
+      rotation: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 0.4,
+      isRibbon: Math.random() < 0.35
+    });
+  }
+}
+
+function popBalloon(idx) {
+  const b = balloons[idx];
+  if (!b) return;
+  spawnBalloonBurst(b);
+  playPopSound();
+  balloons.splice(idx, 1);
 }
 
 // ============ Главный цикл ============
@@ -743,6 +844,41 @@ function draw() {
   }
   ctx.shadowBlur = 0;
 
+  // ============ 💥 ОСКОЛКИ ЛОПНУВШИХ ШАРИКОВ ============
+  for (let i = balloonBursts.length - 1; i >= 0; i--) {
+    const p = balloonBursts[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.18;
+    p.vx *= 0.985;
+    p.rotation += p.rotSpeed;
+    p.life -= p.decay;
+    if (p.life <= 0) { balloonBursts.splice(i, 1); continue; }
+
+    const a = Math.min(1, p.life * 1.5);
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rotation);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = `hsl(${p.hue}, ${p.sat}%, ${p.light}%)`;
+    ctx.shadowColor = `hsl(${p.hue}, 100%, 65%)`;
+    ctx.shadowBlur = 6;
+    if (p.isRibbon) {
+      ctx.fillRect(-p.size * 0.35, -p.size * 1.2, p.size * 0.7, p.size * 2.4);
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(0, -p.size);
+      ctx.lineTo(p.size * 0.9, 0);
+      ctx.lineTo(0, p.size);
+      ctx.lineTo(-p.size * 0.9, 0);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+
   // ============ 🎊 КОНФЕТТИ ============
   for (let i = confetti.length - 1; i >= 0; i--) {
     const c = confetti[i];
@@ -817,6 +953,20 @@ canvas.addEventListener('click', (e) => {
 finalMessage.addEventListener('click', () => {
   finalMessage.classList.remove('show');
 });
+
+// ============ 🎈 Лопание шариков (capture-фаза — перехватывает клик раньше всех) ============
+document.addEventListener('pointerdown', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  if (mx < 0 || my < 0 || mx > rect.width || my > rect.height) return;
+
+  const bIdx = findBalloonAt(mx, my);
+  if (bIdx !== -1) {
+    popBalloon(bIdx);
+    e.stopPropagation();
+  }
+}, true);
 
 window.addEventListener('resize', rebuild);
 
